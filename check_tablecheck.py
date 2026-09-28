@@ -106,24 +106,40 @@ def jp_date(date: str) -> str:
     return f"{y}年{m}月{d}日"
 
 
-def slot_status(page, date: str, label: str) -> str:
-    """選んだ日時の空席表示(#availability)を読み、available / full / unknown を返す"""
+def read_availability(page) -> tuple:
+    """空席表示の枠(#availability)の読み込み完了を待ち、(class, 文言)を返す"""
+    page.locator("#availability-loader.hidden").wait_for(state="attached", timeout=10000)
     tam = page.locator("#availability-tam")
-    pattern = re.compile(rf"{re.escape(jp_date(date))}.*{re.escape(label)}")
+    tam.filter(has_text=re.compile(r"\S")).wait_for(state="visible", timeout=10000)
+    cls = page.locator("#availability").get_attribute("class") or ""
+    return cls, tam.inner_text().strip()
+
+
+def slot_status(page, date: str, label: str) -> str:
+    """選んだ日時が available / full / unknown かを判定する
+    満席: 「(日付)(時刻)には○名様用の空席がありません」など赤い表示
+    空き: 満席表示が出ず、「コース・プランを選択してください」等が出る
+    """
+    this_slot = re.compile(rf"{re.escape(jp_date(date))}.*{re.escape(label)}")
     try:
-        tam.filter(has_text=pattern).wait_for(state="visible", timeout=10000)
-        page.locator("#availability-loader.hidden").wait_for(state="attached", timeout=10000)
+        page.wait_for_timeout(1000)
+        cls, text = read_availability(page)
+        # 直前の時間帯の満席表示が残っている場合は、表示の切り替わりを待つ
+        if "空席がありません" in text and not this_slot.search(text):
+            page.wait_for_timeout(2000)
+            cls, text = read_availability(page)
+        if "空席がありません" in text or "tam-danger" in cls:
+            return "full" if this_slot.search(text) or "空席がありません" not in text else "unknown"
+        # 空きと判定する前に、表示が安定しているかもう一度確認
+        page.wait_for_timeout(1500)
+        cls2, text2 = read_availability(page)
+        if "空席がありません" in text2 or "tam-danger" in cls2:
+            return "full"
     except Exception:
         print(f"  判定不能 {date} {label}: 空席表示が読み込まれませんでした")
         return "unknown"
-    page.wait_for_timeout(300)
-    cls = page.locator("#availability").get_attribute("class") or ""
-    if "tam-danger" in cls:
-        return "full"
-    if "tam-success" in cls:
-        return "available"
-    print(f"  判定不能 {date} {label}: class={cls} / {tam.inner_text().strip()}")
-    return "unknown"
+    print(f"  空き {date} {label}: [{cls2}] {text2}")
+    return "available"
 
 
 def parse_date(d: str) -> Date:
